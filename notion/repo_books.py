@@ -263,14 +263,18 @@ def upsert_book(
     author: Optional[str],
     last_note_date: Optional[date],
     allow_cover_fetch: bool = True,
+    existing_page_id: Optional[str] = None,
 ) -> Tuple[str, Optional[str]]:
+    cover_url: Optional[str] = None
+
     filter_payload = {
         "property": "Name",
         "title": {"equals": title},
     }
-    query = client.query_database(database_id, filter=filter_payload)
-    results = query.get("results", [])
-    cover_url: Optional[str] = None
+    results = []
+    if not existing_page_id:
+        query = client.query_database(database_id, filter=filter_payload)
+        results = query.get("results", [])
 
     if allow_cover_fetch:
         # Clean title for better search results (remove book marks)
@@ -282,8 +286,8 @@ def upsert_book(
     if cover_url:
         cover_payload = {"type": "external", "external": {"url": cover_url}}
 
-    if results:
-        page_id = results[0]["id"]
+    if results or existing_page_id:
+        page_id = existing_page_id or results[0]["id"]
         client.update_page(page_id, properties=properties, cover=cover_payload)
         return page_id, cover_url
 

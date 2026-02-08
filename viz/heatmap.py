@@ -5,7 +5,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict
 
-PALETTE = ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"]
+# Blue monochrome palette (0 activity -> High activity)
+PALETTE = ["#ebedf0", "#c6dbef", "#6baed6", "#3182bd", "#08519c"]
 
 
 def _color_for(count: int, max_count: int) -> str:
@@ -25,54 +26,82 @@ def _color_for(count: int, max_count: int) -> str:
 
 
 def generate_heatmap_svg(daily_counts: Dict[date, int], year: int) -> str:
+    # 1. Determine date range
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
-    # Align to Sunday start
-    start = first_day - timedelta(days=first_day.weekday() + 1 if first_day.weekday() != 6 else 0)
+    
+    # 2. Align start to the Monday of the first week
+    # weekday(): 0=Mon, ..., 6=Sun
+    # If Jan 1 is Mon(0), start=Jan 1. If Jan 1 is Tue(1), start=Dec 31 (prev year).
+    start = first_day - timedelta(days=first_day.weekday())
+    
+    # 3. Align end to the Sunday of the last week
     end = last_day
     while end.weekday() != 6:
         end += timedelta(days=1)
 
-    day = start
-    week = 0
-    rects = []
-    max_count = max(daily_counts.values()) if daily_counts else 0
-    
     # SVG Constants
     CELL_SIZE = 10
     CELL_GAP = 2
     WEEK_WIDTH = CELL_SIZE + CELL_GAP
+    TEXT_HEIGHT = 15  # For month labels
     
+    rects = []
+    max_count = max(daily_counts.values()) if daily_counts else 0
+    
+    day = start
+    week = 0
+    
+    # Track month positions (x-coordinate)
+    # Mapping: month_index (1-12) -> first x-coordinate
+    month_initial_x: Dict[int, int] = {}
+
     while day <= end:
-        color = _color_for(daily_counts.get(day, 0), max_count)
+        # Calculate positions
+        # Row: Mon=0 ... Sun=6
+        row = day.weekday()
         x = week * WEEK_WIDTH
-        y = day.weekday() * WEEK_WIDTH
-        # GitHub style: 0=Sunday. python day.weekday(): 0=Monday, 6=Sunday.
-        # We want Sunday at top (y=0).
-        # Adjust day.weekday() to Sunday=0 map: 6->0, 0->1, 1->2 ...
-        week_day_idx = (day.weekday() + 1) % 7
-        y = week_day_idx * WEEK_WIDTH
+        y = row * WEEK_WIDTH + TEXT_HEIGHT  # Offset by header height
+        
+        # Color & Data
+        count = daily_counts.get(day, 0)
+        color = _color_for(count, max_count)
+        
+        # Capture first occurrence of a month to place label
+        if day.year == year and day.day <= 7: 
+            if day.day == 1:
+                month_initial_x[day.month] = x
         
         rects.append(
-            f'<rect width="{CELL_SIZE}" height="{CELL_SIZE}" x="{x}" y="{y}" rx="2" ry="2" fill="{color}" data-date="{day.isoformat()}" data-count="{daily_counts.get(day, 0)}">'
-            f'<title>{daily_counts.get(day, 0)} notes on {day.isoformat()}</title>'
-            f'</rect>'
+            f'<rect class="day-cell" width="{CELL_SIZE}" height="{CELL_SIZE}" '
+            f'x="{x}" y="{y}" rx="2" ry="2" fill="{color}" '
+            f'data-date="{day.isoformat()}" data-count="{count}" '
+            f'data-date-readable="{day.strftime("%B %d")}"></rect>'
         )
         
-        if week_day_idx == 6: # Saturday, end of column
+        if row == 6: # Sunday, end of column
             week += 1
         day += timedelta(days=1)
 
+    # Generate Month Labels
+    month_labels = []
+    for m in range(1, 13):
+        x_pos = month_initial_x.get(m)
+        if x_pos is not None:
+            month_name = calendar.month_abbr[m]
+            month_labels.append(
+                f'<text x="{x_pos}" y="{TEXT_HEIGHT - 5}" font-family="sans-serif" font-size="10" fill="#767676">{month_name}</text>'
+            )
+
     width = (week + 1) * WEEK_WIDTH + 10
-    height = 7 * WEEK_WIDTH + 10
+    height = 7 * WEEK_WIDTH + TEXT_HEIGHT + 10
     
-    label_days = ['Mon', 'Wed', 'Fri']
-    # Simplified without axis labels for now to keep SVG robust
-    
+    svg_content = "".join(month_labels + rects)
+
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" role="img" aria-label="Reading activity heatmap">'
-        f"<style>rect {{ shape-rendering: geometricPrecision; }} rect:hover {{ stroke: #555; stroke-width: 1px; }}</style>"
-        f'<g transform="translate(4, 4)">{"".join(rects)}</g>'
+        f'<style>text {{ dominant-baseline: auto; }}</style>'
+        f'<g transform="translate(14, 0)">{svg_content}</g>'
         "</svg>"
     )
     return svg
@@ -107,10 +136,10 @@ def write_heatmap(daily_counts: Dict[date, int], out_dir: Path) -> None:
     
     html = f"""
 <!DOCTYPE html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-  <meta charset=\"UTF-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WeChat Read Heatmap</title>
   <style>
     body {{ 
@@ -168,11 +197,38 @@ def write_heatmap(daily_counts: Dict[date, int], out_dir: Path) -> None:
       border-radius: 2px; 
       display: inline-block; 
     }}
+    
+    /* Tooltip Styles */
+    #tooltip {{
+      position: absolute;
+      display: none;
+      background: #ffffff;
+      color: #24292f;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      border: 1px solid rgba(0,0,0,0.1);
+      pointer-events: none;
+      z-index: 100;
+      white-space: nowrap;
+    }}
+    
+    /* Hover effect on cells */
+    rect.day-cell {{
+        transition: stroke 0.1s;
+    }}
+    rect.day-cell:hover {{
+        stroke: #555;
+        stroke-width: 1px;
+    }}
+
     @media (prefers-color-scheme: dark) {{
       .card {{ background: #0d1117; border-color: #30363d; }}
       h1 {{ color: #c9d1d9; }}
       .legend {{ color: #8b949e; }}
       select {{ background-color: #21262d; border-color: #363b42; color: #c9d1d9; }}
+      #tooltip {{ background: #21262d; color: #c9d1d9; border-color: #30363d; }}
     }}
   </style>
   <script>
@@ -181,20 +237,52 @@ def write_heatmap(daily_counts: Dict[date, int], out_dir: Path) -> None:
       document.querySelectorAll('.heatmap-wrapper').forEach(el => el.style.display = 'none');
       document.getElementById('year-' + year).style.display = 'block';
     }}
+
+    document.addEventListener('DOMContentLoaded', () => {{
+      const tooltip = document.getElementById('tooltip');
+      const cells = document.querySelectorAll('.day-cell');
+
+      cells.forEach(cell => {{
+        cell.addEventListener('mouseenter', (e) => {{
+          const dateStr = cell.getAttribute('data-date-readable');
+          const count = cell.getAttribute('data-count');
+          const unit = count == 1 ? 'note' : 'notes';
+          
+          tooltip.innerHTML = `<strong>${{dateStr}}</strong><br>${{count}} ${{unit}}`;
+          tooltip.style.display = 'block';
+          
+          // Initial position required to calculate dimensions
+          const rect = cell.getBoundingClientRect();
+          const tooltipRect = tooltip.getBoundingClientRect();
+          
+          // Center above the cell
+          let top = rect.top + window.scrollY - tooltipRect.height - 8;
+          let left = rect.left + window.scrollX + (rect.width / 2) - (tooltipRect.width / 2);
+          
+          tooltip.style.top = `${{top}}px`;
+          tooltip.style.left = `${{left}}px`;
+        }});
+
+        cell.addEventListener('mouseleave', () => {{
+          tooltip.style.display = 'none';
+        }});
+      }});
+    }});
   </script>
 </head>
 <body>
-  <div class=\"card\">
-    <div class=\"header\">
+  <div id="tooltip"></div>
+  <div class="card">
+    <div class="header">
       <h1>Reading Contributions</h1>
-      <select onchange=\"changeYear(this)\">
+      <select onchange="changeYear(this)">
         {options_html}
       </select>
     </div>
     
     {''.join(containers_html)}
     
-    <div class=\"legend\">
+    <div class="legend">
       <span>Less</span>
       {''.join([f'<span class="box" style="background:{c}"></span>' for c in PALETTE])}
       <span>More</span>

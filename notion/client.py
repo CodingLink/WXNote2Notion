@@ -45,13 +45,41 @@ class NotionClient:
         filter: Optional[Dict[str, Any]] = None,
         sorts: Optional[Any] = None,
         page_size: int = 100,
+        start_cursor: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"page_size": page_size}
         if filter:
             payload["filter"] = filter
         if sorts:
             payload["sorts"] = sorts
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
         return self._request("POST", f"databases/{database_id}/query", json=payload)
+
+    def query_all(
+        self,
+        database_id: str,
+        filter: Optional[Dict[str, Any]] = None,
+        sorts: Optional[Any] = None,
+        page_size: int = 100,
+    ) -> list[Dict[str, Any]]:
+        pages: list[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            result = self.query_database(
+                database_id,
+                filter=filter,
+                sorts=sorts,
+                page_size=page_size,
+                start_cursor=cursor,
+            )
+            pages.extend(result.get("results", []))
+            if not result.get("has_more"):
+                break
+            cursor = result.get("next_cursor")
+            if not cursor:
+                break
+        return pages
 
     def create_page(
         self,
@@ -85,6 +113,20 @@ class NotionClient:
         if cover:
             payload["cover"] = cover
         return self._request("PATCH", f"pages/{page_id}", json=payload)
+
+    def list_block_children(
+        self, block_id: str, page_size: int = 100, start_cursor: Optional[str] = None
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"page_size": page_size}
+        if start_cursor:
+            params["start_cursor"] = start_cursor
+        return self._request("GET", f"blocks/{block_id}/children", params=params)
+
+    def append_block_children(self, block_id: str, children: list[Dict[str, Any]]) -> Dict[str, Any]:
+        return self._request("PATCH", f"blocks/{block_id}/children", json={"children": children})
+
+    def delete_block(self, block_id: str) -> None:
+        self._request("DELETE", f"blocks/{block_id}")
 
 
 def rich_text(content: str) -> Dict[str, Any]:
